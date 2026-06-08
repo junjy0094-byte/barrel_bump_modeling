@@ -81,31 +81,48 @@ def parse_nlist(filepath):
 def morph_nodes(nodes, R0, a_sq, H, R_bot, R_top,
                 bulge_ratio=1.30, z_belly_ratio=0.42,
                 z_bot=0.0,                          # ← 추가
+                r_bot_rev=None,                     # ← 추가
                 tol=1e-9):
     """
     z_bot : 범프 바닥의 절대 z 좌표 (기본 0.0)
             범프는 z_bot ~ z_bot+H 범위에 존재한다고 가정.
+    r_bot_rev : z_bot 이하(base) 영역의 목표 원 반경.
+            - 원래 반경 R0 인 원통 노드를 r_bot_rev 로 균일 수축시키고,
+              그 내·외부 노드도 동일한 morphing 규칙으로 함께 이동한다
+              (z_bot 이하 모든 단면에 동일 적용 → 원통이 깨지지 않음).
+            - barrel 바닥(z=z_bot) 반경도 r_bot_rev 가 되어 base 영역과
+              연속으로 이어진다(단차 제거).
+            - None 이면 R_bot 으로 두어 기존 거동을 그대로 유지.
+
+    NOTE: base 영역(z<=z_bot)과 barrel 영역(z>z_bot)은 노드 z가 겹치지 않는
+          서로소 집합이므로, "base 먼저 → barrel 나중" 변환을 아래의 한 번의
+          piecewise Rz 계산으로 동일하게 구현한다.
     """
     if R0 >= a_sq:
         raise ValueError(f"R0({R0}) >= a_sq({a_sq})")
+    if r_bot_rev is None:
+        r_bot_rev = R_bot
 
     x = nodes['x'].copy()
     y = nodes['y'].copy()
     z = nodes['z'].copy()
 
     # ---- z 범위 sanity check ----
+    # z_bot 이하는 의도적으로 base 수축이 적용되는 영역이므로 경고하지 않는다.
     z_min, z_max = z.min(), z.max()
-    if z_min < z_bot - tol or z_max > z_bot + H + tol:
-        print(f"  WARNING: node z 범위 [{z_min:.6f}, {z_max:.6f}]가 "
-              f"범프 영역 [{z_bot:.6f}, {z_bot+H:.6f}]을 벗어남")
+    if z_max > z_bot + H + tol:
+        print(f"  INFO: z_bot+H({z_bot+H:.6f}) 위쪽 노드 존재 "
+              f"(z_max={z_max:.6f}) → R_top 반경으로 처리됨")
 
     r_orig = np.hypot(x, y)
     theta  = np.arctan2(y, x)
 
-    # ---- z_bot 전달 ----
-    Rz = barrel_profile(z, R_bot, R_top, H,
+    # ---- barrel 바닥을 r_bot_rev 로 설정 → base 영역과 연속 ----
+    Rz = barrel_profile(z, r_bot_rev, R_top, H,
                          bulge_ratio, z_belly_ratio,
                          z_bot=z_bot)
+    # ---- z_bot 이하 base: 원통형을 r_bot_rev 로 균일 수축 ----
+    Rz = np.where(z <= z_bot + tol, r_bot_rev, Rz)
 
     R_sq = a_sq / np.maximum(np.abs(np.cos(theta)), np.abs(np.sin(theta)))
 
@@ -167,21 +184,27 @@ def write_nmodif(nodes_new, filepath, chunk=5000):
 # ============================================
 def preview(nodes_new, R0, a_sq, H, R_bot, R_top,
             bulge_ratio=1.30, z_belly_ratio=0.42,
-            z_bot=0.0):                              # ← 추가
+            z_bot=0.0, r_bot_rev=None):              # ← 추가
     import matplotlib.pyplot as plt
+    if r_bot_rev is None:
+        r_bot_rev = R_bot
 
     fig = plt.figure(figsize=(12, 5))
 
-    # (a) 항아리 프로파일 (절대 z로 표시)
+    # (a) 항아리 프로파일 (절대 z로 표시, z_bot 아래 base 수축 영역 포함)
     ax1 = fig.add_subplot(1, 3, 1)
-    zs = np.linspace(z_bot, z_bot + H, 200)
-    Rs = barrel_profile(zs, R_bot, R_top, H,
+    z_low = z_bot - 0.3 * H
+    zs = np.linspace(z_low, z_bot + H, 260)
+    Rs = barrel_profile(zs, r_bot_rev, R_top, H,
                          bulge_ratio, z_belly_ratio, z_bot=z_bot)
+    Rs = np.where(zs <= z_bot, r_bot_rev, Rs)   # base 영역은 균일 수축
     ax1.plot(Rs, zs, 'b-')
     ax1.plot(-Rs, zs, 'b-')
     ax1.fill_betweenx(zs, -Rs, Rs, alpha=0.2)
     ax1.axvline(R0, color='r', ls=':', label=f'R0={R0}')
     ax1.axvline(-R0, color='r', ls=':')
+    ax1.axvline(r_bot_rev, color='m', ls='-.', label=f'r_bot_rev={r_bot_rev}')
+    ax1.axvline(-r_bot_rev, color='m', ls='-.')
     ax1.axhline(z_bot, color='gray', ls='--', alpha=0.5)
     ax1.set_xlabel('R'); ax1.set_ylabel('z (absolute)')
     ax1.set_aspect('equal'); ax1.grid(True); ax1.legend()
@@ -224,6 +247,9 @@ if __name__ == "__main__":
     bulge_ratio   = 1.20
     z_belly_ratio = 0.42
     z_bot = float(sys.argv[5])
+    # r_bot_rev: z_bot 이하 base 영역의 목표 원 반경 (선택).
+    #   미지정 시 R0 → base 수축 없음(기존 거동). 배럴 바닥도 r_bot_rev 로 시작.
+    r_bot_rev = float(sys.argv[6]) if len(sys.argv) > 6 else R0
 
     here = Path(__file__).parent
     nlist_file = here / "nodes_premesh.txt"
@@ -240,7 +266,8 @@ if __name__ == "__main__":
     print("[2/4] Morphing nodes...")
     nodes_new = morph_nodes(nodes, R0, a_sq, H, R_bot, R_top,
                              bulge_ratio, z_belly_ratio,
-                             z_bot=z_bot)              # ← 전달
+                             z_bot=z_bot,
+                             r_bot_rev=r_bot_rev)      # ← 전달
 
     print("[3/4] Writing NMODIF commands...")
     write_nmodif(nodes_new, out_file)
