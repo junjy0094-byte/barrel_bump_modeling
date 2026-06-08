@@ -122,7 +122,18 @@ def morph_nodes(nodes, R0, a_sq, H, R_bot, R_top,
                          bulge_ratio, z_belly_ratio,
                          z_bot=z_bot)
     # ---- z_bot 이하 base: 원통형을 r_bot_rev 로 균일 수축 ----
-    Rz = np.where(z <= z_bot + tol, r_bot_rev, Rz)
+    base_mask = z <= z_bot + tol
+    Rz = np.where(base_mask, r_bot_rev, Rz)
+
+    # ---- 진단: base 수축 영역으로 잡힌 노드 수/범위 출력 ----
+    n_base = int(np.count_nonzero(base_mask))
+    if n_base:
+        zb = z[base_mask]
+        print(f"  base 수축영역(z<=z_bot={z_bot:.6f}): {n_base}/{len(z)} nodes, "
+              f"z범위 [{zb.min():.6f}, {zb.max():.6f}] -> R={r_bot_rev}")
+    else:
+        print(f"  WARNING: base 수축영역(z<=z_bot={z_bot:.6f})에 해당하는 노드가 없음! "
+              f"(node z범위 [{z_min:.6f}, {z_max:.6f}]) → z_bot 값/좌표계 확인 필요")
 
     R_sq = a_sq / np.maximum(np.abs(np.cos(theta)), np.abs(np.sin(theta)))
 
